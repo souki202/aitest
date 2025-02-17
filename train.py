@@ -3,18 +3,18 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from dataset import NoiseReductionDataset
-from model import SimpleCNN
+from model import UNet
 from constants import DATASET_DIR, IMAGE_SIZE
 import os
 from tqdm import tqdm # プログレスバー
 
 def train():
     # ハイパーパラメータ
-    batch_size = 64
+    batch_size = 12
     learning_rate = 0.001
     epochs = 100
     image_size = (IMAGE_SIZE, IMAGE_SIZE)  # 定数を使用
-    num_workers = 4 # データローダーのワーカー数 (CPUのコア数に合わせて調整)
+    num_workers = 0  # デバッグのために0に設定
 
     # データセットとデータローダー
     train_dataset = NoiseReductionDataset(DATASET_DIR, image_size=image_size, train=True)
@@ -27,7 +27,7 @@ def train():
     print("Data loaders created.")
 
     # モデル、損失関数、オプティマイザー
-    model = SimpleCNN().to('cuda') # GPUにモデルを転送
+    model = UNet().to('cuda') # GPUにモデルを転送
     criterion = nn.MSELoss()       # 平均二乗誤差損失
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
