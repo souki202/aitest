@@ -5,7 +5,7 @@ from torchvision import transforms
 from constants import IMAGE_SIZE
 import os
 
-def infer(input_image_path, output_image_path, model_path='checkpoints/model_epoch_100.pth'): # モデルパスを適宜修正
+def infer(input_image_path, output_image_path, model_path='checkpoints/checkpoint_500.pth'): # モデルパスを適宜修正
     """
     推論を実行し、ノイズ除去された画像を保存する
 
@@ -16,7 +16,15 @@ def infer(input_image_path, output_image_path, model_path='checkpoints/model_epo
     """
     # モデル準備
     model = UNet().to('cuda') # モデルをGPUに転送
-    model.load_state_dict(torch.load(model_path)) # 学習済みパラメータをロード
+    checkpoint = torch.load(model_path)
+    # 新しい形式のチェックポイントに対応
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+    else:
+        # 古い形式のチェックポイントにも対応（後方互換性のため）
+        model.load_state_dict(checkpoint)
+        print("Loaded legacy checkpoint format")
     model.eval() # 評価モードに設定
 
     # 画像読み込みと前処理 (アスペクト比を維持したリサイズとパディング)
