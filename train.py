@@ -12,6 +12,7 @@ import glob
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision.utils import save_image
 from vgg_loss import VGGLoss
+import torch.cuda.amp as amp  # Import Automatic Mixed Precision
 
 def get_latest_checkpoint():
     # チェックポイントファイルを検索
@@ -22,21 +23,22 @@ def get_latest_checkpoint():
     latest_file = max(checkpoint_files, key=lambda x: int(x.split('_')[-1].split('.')[0]))
     return latest_file
 
-def inference_at_checkpoint(model, val_dataset, epoch):
+def inference_at_checkpoint(model, val_dataset, epoch, scaler): # scalerを引数に追加
     """チェックポイントでの推論実行"""
     model.eval()
     os.makedirs('inference_results', exist_ok=True)
-    
+
     # 検証データセットから1枚目の画像を取得
     input, target = val_dataset[0]  # インデックス0の画像を取得
     input = input.unsqueeze(0).to('cuda')  # バッチ次元を追加してGPUに転送
     target = target.unsqueeze(0).to('cuda')
-    
+
     with torch.no_grad():
-        output = model(input)
-        
+        with torch.amp.autocast(dtype=torch.float16, device_type="cuda"): # 推論時もautocastを使用
+            output = model(input)
+
     # 入力、出力、ターゲットを並べて保存
-    result = torch.cat([input, output, target], dim=0)
+    result = torch.cat([input.cpu(), output.cpu(), target.cpu()], dim=0) # CPUに移動してから結合
     save_image(result, f'inference_results/result_epoch_{epoch}.png', nrow=1, normalize=True)
 
 def train():
@@ -51,7 +53,7 @@ def train():
     train_dataset = NoiseReductionDataset(DATASET_DIR, image_size=image_size, train=True)
     print(f"Training on {len(train_dataset)} samples")
     val_dataset = NoiseReductionDataset(DATASET_DIR, image_size=image_size, train=False)
-    print(f"Validating on {len(val_dataset)} samples")  
+    print(f"Validating on {len(val_dataset)} samples")
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
@@ -61,12 +63,12 @@ def train():
     model = REDNet().to('cuda') # GPUにモデルを転送
     content_criterion = nn.MSELoss()  # ピクセルレベルの損失
     perceptual_criterion = VGGLoss().to('cuda')  # 知覚損失
-    
-    optimizer = optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=0.02) 
+
+    optimizer = optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=0.02)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
     # GradScalerの初期化
-    scaler = torch.amp.GradScaler()
+    scaler = torch.amp.GradScaler() # GradScaler for mixed precision
 
     # 開始エポックの初期化
     start_epoch = 0
@@ -79,9 +81,10 @@ def train():
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])  # スケジューラの状態を読み込み
         start_epoch = checkpoint['epoch']
+        scaler.load_state_dict(checkpoint['scaler_state_dict']) # GradScalerの状態を読み込み
         print(f"Resuming training from epoch {start_epoch}")
 
-    print("Start training...")
+    print("Start training with FP16...") # FP16 trainingを示すメッセージ
 
     # 学習ループ
     for epoch in range(start_epoch, epochs):
@@ -93,15 +96,18 @@ def train():
             inputs, targets = inputs.to('cuda'), targets.to('cuda') # GPUにデータを転送
 
             optimizer.zero_grad() # 勾配初期化
-            outputs = model(inputs) # 順伝播
-            
-            # コンテンツ損失とVGG損失の組み合わせ
-            content_loss = content_criterion(outputs, targets)
-            perceptual_loss = perceptual_criterion(outputs, targets)
-            loss = content_loss + 0.1 * perceptual_loss  # 重み付け係数は調整可能
-            
-            loss.backward() # 逆伝播
-            optimizer.step() # パラメータ更新
+
+            with torch.amp.autocast(dtype=torch.float16, device_type="cuda"): # FP16 precision context
+                outputs = model(inputs) # 順伝播 (FP16)
+
+                # コンテンツ損失とVGG損失の組み合わせ (FP16)
+                content_loss = content_criterion(outputs, targets)
+                perceptual_loss = perceptual_criterion(outputs, targets)
+                loss = content_loss + 0.1 * perceptual_loss  # 重み付け係数は調整可能 (FP16)
+
+            scaler.scale(loss).backward() # スケールされた損失でbackward()を実行
+            scaler.step(optimizer) # optimizer.step()の代わりにscaler.step(optimizer)
+            scaler.update() # スケール値を更新
 
             train_loss += loss.item()
             progress_bar.set_postfix({'loss': f'{loss.item():.4f}'}) # プログレスバーに損失表示
@@ -115,8 +121,9 @@ def train():
             progress_bar_val = tqdm(val_loader, desc=f"Epoch [{epoch+1}/{epochs}] Val", leave=False) # 検証用プログレスバー
             for inputs, targets in progress_bar_val:
                 inputs, targets = inputs.to('cuda'), targets.to('cuda')
-                outputs = model(inputs)
-                loss = content_criterion(outputs, targets)
+                with torch.amp.autocast(dtype=torch.float16, device_type="cuda"): # 検証時もautocastを使用
+                    outputs = model(inputs)
+                    loss = content_criterion(outputs, targets)
                 val_loss += loss.item()
                 progress_bar_val.set_postfix({'val_loss': f'{loss.item():.4f}'}) # 検証損失表示
 
@@ -126,7 +133,7 @@ def train():
         # エポック終了時にスケジューラのステップを実行
         scheduler.step()
 
-        # モデル保存 (10エポックごとに保存)
+        # モデル保存 (5エポックごとに保存)
         if (epoch + 1) % 5 == 0:
             os.makedirs('checkpoints', exist_ok=True)
             checkpoint = {
@@ -134,13 +141,14 @@ def train():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),  # スケジューラの状態を保存
+                'scaler_state_dict': scaler.state_dict(), # GradScalerの状態を保存
                 'train_loss': avg_train_loss,
                 'val_loss': avg_val_loss
             }
             torch.save(checkpoint, f'checkpoints/checkpoint_{epoch+1}.pth')
-            
+
             # チェックポイント保存時に推論を実行
-            inference_at_checkpoint(model, val_dataset, epoch + 1)
+            inference_at_checkpoint(model, val_dataset, epoch + 1, scaler) # scalerを渡す
 
     print("Training finished!")
 
