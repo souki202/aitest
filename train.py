@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from dataset import NoiseReductionDataset
-from model import UNet
+from rednet import REDNet
+from unet import UNet
 from constants import DATASET_DIR, IMAGE_SIZE
 import os
 from tqdm import tqdm
@@ -40,8 +41,8 @@ def inference_at_checkpoint(model, val_dataset, epoch):
 
 def train():
     # ハイパーパラメータ
-    batch_size = 3
-    initial_lr = 0.00075  # 初期学習率
+    batch_size = 1
+    initial_lr = 0.001  # 初期学習率
     epochs = 300
     image_size = (IMAGE_SIZE, IMAGE_SIZE)  # 定数を使用
     num_workers = 0  # デバッグのために0に設定
@@ -57,12 +58,15 @@ def train():
     print("Data loaders created.")
 
     # モデル、損失関数、オプティマイザー
-    model = UNet(3, 64).to('cuda') # GPUにモデルを転送
+    model = REDNet().to('cuda') # GPUにモデルを転送
     content_criterion = nn.MSELoss()  # ピクセルレベルの損失
     perceptual_criterion = VGGLoss().to('cuda')  # 知覚損失
     
     optimizer = optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=0.02) 
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+
+    # GradScalerの初期化
+    scaler = torch.amp.GradScaler()
 
     # 開始エポックの初期化
     start_epoch = 0

@@ -1,5 +1,5 @@
 import torch
-from model import UNet
+from unet import UNet
 from PIL import Image
 from torchvision import transforms
 from constants import IMAGE_SIZE

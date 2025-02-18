@@ -11,9 +11,10 @@ def is_image_file(path):
 
 def load_image_as_array(image_path):
     with Image.open(image_path) as img:
+        print(f"Loaded {image_path.name} ({img.width}x{img.height})")
         # Convert to RGB mode to ensure consistent channels
         img = img.convert('RGB')
-        img = img.resize((512, 512))  # resize for faster comparison
+        img = img.resize((384, 384))  # resize for faster comparison
         return np.array(img)
 
 def calculate_similarity(img1_array, img2_array):

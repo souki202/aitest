@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.init as init
 
 class UNet(nn.Module):
     def __init__(self, num_channels=3, num_filters=64):
@@ -58,6 +59,17 @@ class UNet(nn.Module):
 
         # Output Layer
         self.output_conv = nn.Conv2d(num_filters, num_channels, kernel_size=1) # 1x1 conv for channel reduction
+
+        # すべての層の初期化
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """He初期化をすべての畳み込み層に適用"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+                init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
 
     def forward(self, x):
         # Encoder
